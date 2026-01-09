@@ -2,7 +2,6 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include <array>
 
 struct ZoneCount {
     std::string zone;
@@ -27,10 +26,7 @@ public:
     std::vector<SlotCount> topBusySlots(int k = 10) const;
 
 private:
-    // Aggregation storage
-    // Maps ZoneID -> Total Count
+    // --- THIS WAS MISSING IN YOUR CODE ---
     std::unordered_map<std::string, long long> _zoneCounts;
-    
-    // Maps ZoneID -> Vector of 24 counters (one for each hour)
     std::unordered_map<std::string, std::vector<long long>> _zoneHourlyCounts;
 };
