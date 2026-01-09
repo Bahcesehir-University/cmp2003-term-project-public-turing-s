@@ -3,30 +3,43 @@
 #include <algorithm>
 #include <iostream>
 #include <vector>
+#include <cctype>
+
+// Helper to remove whitespace and carriage returns (\r)
+static std::string trim(const std::string& str) {
+    if (str.empty()) return "";
+    size_t first = 0;
+    while (first < str.size() && std::isspace(static_cast<unsigned char>(str[first]))) {
+        first++;
+    }
+    if (first == str.size()) return "";
+    
+    size_t last = str.size() - 1;
+    while (last > first && std::isspace(static_cast<unsigned char>(str[last]))) {
+        last--;
+    }
+    return str.substr(first, last - first + 1);
+}
 
 void TripAnalyzer::ingestFile(const std::string& csvPath) {
     std::ifstream file(csvPath);
-    if (!file.is_open()) {
-        return;
-    }
+    if (!file.is_open()) return;
 
     std::string line;
-    // Attempt to skip header if present
-    // We handle this by checking if the first character of the first token is a digit in the loop
-    // But logically, simply reading the first line as a potential header is safer if strict "skip header" is required.
-    // However, the most robust way for "dirty" data is to validate every row's format.
-    
     bool firstLine = true;
+    
+    // Pre-allocate to speed up parsing
+    std::vector<std::string> tokens;
+    tokens.reserve(10); 
 
     while (std::getline(file, line)) {
         if (line.empty()) continue;
 
-        // Manual tokenization is faster than stringstream
-        std::vector<std::string> tokens;
-        tokens.reserve(6);
+        tokens.clear();
         size_t start = 0;
         size_t end = line.find(',');
 
+        // Fast tokenization
         while (end != std::string::npos) {
             tokens.push_back(line.substr(start, end - start));
             start = end + 1;
@@ -34,53 +47,47 @@ void TripAnalyzer::ingestFile(const std::string& csvPath) {
         }
         tokens.push_back(line.substr(start));
 
-        // Validation 1: Column count
-        // Expecting at least: TripID, PickupZone, DropoffZone, PickupTime, ... (4+ columns)
-        // Based on file: ID, PickupZone, DropoffZone, Timestamp, Distance, Fare (6 columns)
-        if (tokens.size() < 4) {
-            continue; // Malformed row
-        }
+        // 1. Validation: Column count (need at least 4)
+        if (tokens.size() < 4) continue;
 
-        // Handle Header Row: If first token is not numeric, assume header and skip
+        // 2. Skip Header
         if (firstLine) {
             firstLine = false;
-            if (!isdigit(tokens[0][0])) {
-                continue; 
+            // If the first char of the first token is NOT a digit, it's likely a header
+            std::string firstTok = trim(tokens[0]);
+            if (firstTok.empty() || !std::isdigit(static_cast<unsigned char>(firstTok[0]))) {
+                continue;
             }
         }
 
-        // Extract Key Fields
-        // Index 1: PickupZoneID
-        // Index 3: PickupDatetime (e.g., "2024-01-01 00:00")
-        std::string zone = tokens[1];
-        std::string dateStr = tokens[3];
+        // 3. Extract Fields
+        std::string zone = trim(tokens[1]);     // PickupZone
+        std::string dateStr = trim(tokens[3]);  // Timestamp
 
         if (zone.empty() || dateStr.empty()) continue;
 
-        // Extract Hour
-        // Format expects "YYYY-MM-DD HH:MM" or similar. We look for the space.
+        // 4. Parse Hour
+        // Expecting format "YYYY-MM-DD HH:MM"
         size_t spacePos = dateStr.find(' ');
         if (spacePos == std::string::npos || spacePos + 2 >= dateStr.size()) {
-            continue; // Malformed date format
+            continue;
         }
 
-        // Parse Hour safely
-        std::string hourStr = dateStr.substr(spacePos + 1, 2);
         int hour = -1;
         try {
-            hour = std::stoi(hourStr);
+            std::string hourSub = dateStr.substr(spacePos + 1, 2);
+            // Quick check if numeric
+            if (!std::isdigit(static_cast<unsigned char>(hourSub[0]))) continue;
+            hour = std::stoi(hourSub);
         } catch (...) {
-            continue; // Parsing failed
+            continue;
         }
 
-        if (hour < 0 || hour > 23) {
-            continue; // Invalid hour logic
-        }
+        if (hour < 0 || hour > 23) continue;
 
-        // Aggregate
+        // 5. Aggregate
         _zoneCounts[zone]++;
         
-        // Ensure vector exists
         if (_zoneHourlyCounts.find(zone) == _zoneHourlyCounts.end()) {
             _zoneHourlyCounts[zone] = std::vector<long long>(24, 0);
         }
@@ -92,40 +99,43 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
     std::vector<ZoneCount> results;
     results.reserve(_zoneCounts.size());
 
-    // Flatten map to vector
+    // Explicit construction to fix compiler error
     for (const auto& kv : _zoneCounts) {
-        results.push_back({kv.first, kv.second});
+        ZoneCount z;
+        z.zone = kv.first;
+        z.count = kv.second;
+        results.push_back(z);
     }
 
     // Sort: Count DESC, Zone ASC
     std::sort(results.begin(), results.end(), [](const ZoneCount& a, const ZoneCount& b) {
         if (a.count != b.count) {
-            return a.count > b.count; // Higher count first
+            return a.count > b.count; 
         }
-        return a.zone < b.zone;       // Lexicographical zone string
+        return a.zone < b.zone;
     });
 
-    // Trim to k
     if (k >= 0 && (size_t)k < results.size()) {
         results.resize(k);
     }
-
     return results;
 }
 
 std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     std::vector<SlotCount> results;
-    // Reserve estimation: zones * 24 is max, but usually sparse
-    results.reserve(_zoneHourlyCounts.size() * 12); 
+    results.reserve(_zoneHourlyCounts.size() * 5); 
 
-    // Flatten nested map/vector to linear vector
     for (const auto& pair : _zoneHourlyCounts) {
         const std::string& zone = pair.first;
         const std::vector<long long>& hours = pair.second;
         
         for (int h = 0; h < 24; ++h) {
             if (hours[h] > 0) {
-                results.push_back({zone, h, hours[h]});
+                SlotCount s;
+                s.zone = zone;
+                s.hour = h;
+                s.count = hours[h];
+                results.push_back(s);
             }
         }
     }
@@ -133,18 +143,16 @@ std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     // Sort: Count DESC, Zone ASC, Hour ASC
     std::sort(results.begin(), results.end(), [](const SlotCount& a, const SlotCount& b) {
         if (a.count != b.count) {
-            return a.count > b.count; // Higher count first
+            return a.count > b.count; 
         }
         if (a.zone != b.zone) {
-            return a.zone < b.zone;   // Zone A-Z
+            return a.zone < b.zone;   
         }
-        return a.hour < b.hour;       // Hour 0-23
+        return a.hour < b.hour;       
     });
 
-    // Trim to k
     if (k >= 0 && (size_t)k < results.size()) {
         results.resize(k);
     }
-
     return results;
 }
