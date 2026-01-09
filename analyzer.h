@@ -26,7 +26,7 @@ public:
     std::vector<SlotCount> topBusySlots(int k = 10) const;
 
 private:
-    // --- THIS WAS MISSING IN YOUR CODE ---
+    // Internal storage
     std::unordered_map<std::string, long long> _zoneCounts;
     std::unordered_map<std::string, std::vector<long long>> _zoneHourlyCounts;
 };
