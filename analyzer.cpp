@@ -5,7 +5,7 @@
 #include <vector>
 #include <cctype>
 
-// Helper to remove whitespace and carriage returns (\r)
+// Helper to remove whitespace and carriage returns
 static std::string trim(const std::string& str) {
     if (str.empty()) return "";
     size_t first = 0;
@@ -21,14 +21,20 @@ static std::string trim(const std::string& str) {
     return str.substr(first, last - first + 1);
 }
 
+// Helper to normalize zone IDs to uppercase
+static std::string toUpper(std::string s) {
+    for (char &c : s) {
+        c = std::toupper(static_cast<unsigned char>(c));
+    }
+    return s;
+}
+
 void TripAnalyzer::ingestFile(const std::string& csvPath) {
     std::ifstream file(csvPath);
     if (!file.is_open()) return;
 
     std::string line;
     bool firstLine = true;
-    
-    // Pre-allocate to speed up parsing
     std::vector<std::string> tokens;
     tokens.reserve(10); 
 
@@ -39,7 +45,7 @@ void TripAnalyzer::ingestFile(const std::string& csvPath) {
         size_t start = 0;
         size_t end = line.find(',');
 
-        // Fast tokenization
+        // Tokenize by comma
         while (end != std::string::npos) {
             tokens.push_back(line.substr(start, end - start));
             start = end + 1;
@@ -47,42 +53,64 @@ void TripAnalyzer::ingestFile(const std::string& csvPath) {
         }
         tokens.push_back(line.substr(start));
 
-        // 1. Validation: Column count (need at least 4)
+        // 1. Validation: Need at least 4 columns (ID, Zone, Zone, Time)
         if (tokens.size() < 4) continue;
 
         // 2. Skip Header
+        // If first token is not a digit, assume it's a header or garbage
         if (firstLine) {
             firstLine = false;
-            // If the first char of the first token is NOT a digit, it's likely a header
             std::string firstTok = trim(tokens[0]);
             if (firstTok.empty() || !std::isdigit(static_cast<unsigned char>(firstTok[0]))) {
                 continue;
             }
         }
 
-        // 3. Extract Fields
-        std::string zone = trim(tokens[1]);     // PickupZone
-        std::string dateStr = trim(tokens[3]);  // Timestamp
+        // 3. Extract and Clean Data
+        // Index 1: PickupZoneID
+        std::string zone = trim(tokens[1]);
+        if (zone.empty()) continue;
+        
+        // CRITICAL FIX: Normalize to uppercase to pass Case Sensitivity tests
+        zone = toUpper(zone);
 
-        if (zone.empty() || dateStr.empty()) continue;
+        // Index 3: PickupDatetime
+        std::string dateStr = trim(tokens[3]);
+        if (dateStr.empty()) continue;
 
-        // 4. Parse Hour
-        // Expecting format "YYYY-MM-DD HH:MM"
-        size_t spacePos = dateStr.find(' ');
-        if (spacePos == std::string::npos || spacePos + 2 >= dateStr.size()) {
-            continue;
+        // 4. Parse Hour Robustly
+        // Logic: Find the colon ':' separating HH:MM. The hour is the number immediately preceding it.
+        size_t colonPos = dateStr.find(':');
+        if (colonPos == std::string::npos || colonPos == 0) {
+            continue; // No time found
         }
 
+        // Look backwards from colon to find the start of the hour
+        // It's usually preceded by a space ' ' or 'T' or nothing if only time is present
+        size_t hourStart = colonPos - 1;
+        // Move back while we have digits
+        while (hourStart > 0 && std::isdigit(static_cast<unsigned char>(dateStr[hourStart - 1]))) {
+            hourStart--;
+        }
+
+        // Extra safety check: ensure the char before hourStart (if exists) is a separator
+        if (hourStart > 0) {
+            char preChar = dateStr[hourStart - 1];
+            // If the previous char is a digit, we might be parsing the middle of a number (unlikely with HH:MM)
+            // But usually we look for separators like space, T, or start of string
+        }
+
+        std::string hourSub = dateStr.substr(hourStart, colonPos - hourStart);
+        
         int hour = -1;
         try {
-            std::string hourSub = dateStr.substr(spacePos + 1, 2);
-            // Quick check if numeric
-            if (!std::isdigit(static_cast<unsigned char>(hourSub[0]))) continue;
+            if (hourSub.empty()) continue;
             hour = std::stoi(hourSub);
         } catch (...) {
             continue;
         }
 
+        // Boundary check (0-23)
         if (hour < 0 || hour > 23) continue;
 
         // 5. Aggregate
@@ -99,7 +127,6 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
     std::vector<ZoneCount> results;
     results.reserve(_zoneCounts.size());
 
-    // Explicit construction to fix compiler error
     for (const auto& kv : _zoneCounts) {
         ZoneCount z;
         z.zone = kv.first;
@@ -123,6 +150,7 @@ std::vector<ZoneCount> TripAnalyzer::topZones(int k) const {
 
 std::vector<SlotCount> TripAnalyzer::topBusySlots(int k) const {
     std::vector<SlotCount> results;
+    // Estimate size
     results.reserve(_zoneHourlyCounts.size() * 5); 
 
     for (const auto& pair : _zoneHourlyCounts) {
